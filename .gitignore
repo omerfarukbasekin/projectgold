@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ipynb_checkpoints/
+.vscode/
+
+# Environment and Credentials
+.env
+*.env
+service-account.json
+service_account.json
+google-credentials.json
+
+# Migration files (if any)
+migrate.py
+
+# Docker
+Dockerfile.bak
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Node.js (if you later add frontend build tools like npm/yarn)
+node_modules/
+dist/
+build/
+
+# macOS
+.DS_Store

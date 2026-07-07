@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-gold_db}
+      POSTGRES_USER: ${DB_USER:-gold_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gold_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "./runner.sh collector"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gold_db}
+      DB_USER: ${DB_USER:-gold_user}
+      DB_PASSWORD: ${DB_PASSWORD:-gold_password}
+    depends_on:
+      - db
+    restart: always
+    networks:
+      - app-network
+
+  syncer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "./runner.sh syncer"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gold_db}
+      DB_USER: ${DB_USER:-gold_user}
+      DB_PASSWORD: ${DB_PASSWORD:-gold_password}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-projectgold-6b3bf}
+    volumes:
+      # Mount service-account.json if you put it in project gold directory for credential authorization
+      - .:/app
+    depends_on:
+      - db
+    restart: always
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+
