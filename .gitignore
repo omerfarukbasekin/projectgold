@@ -21,7 +21,7 @@ service_account.json
 google-credentials.json
 
 # Migration files (if any)
-migrate.py
+# migrate.py
 
 # Docker
 Dockerfile.bak
