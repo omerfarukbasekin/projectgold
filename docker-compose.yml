@@ -5,13 +5,13 @@ services:
     image: postgres:15-alpine
     restart: always
     environment:
-      POSTGRES_DB: ${DB_NAME:-gold_db}
-      POSTGRES_USER: ${DB_USER:-gold_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-gold_password}
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    expose:
+      - 5432
     networks:
       - app-network
 
@@ -23,9 +23,11 @@ services:
     environment:
       DB_HOST: db
       DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-gold_db}
-      DB_USER: ${DB_USER:-gold_user}
-      DB_PASSWORD: ${DB_PASSWORD:-gold_password}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      # If collector needs to talk to external API with a key, define it here:
+      # GOLD_API_KEY: ${GOLD_API_KEY}
     depends_on:
       - db
     restart: always
@@ -40,13 +42,14 @@ services:
     environment:
       DB_HOST: db
       DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-gold_db}
-      DB_USER: ${DB_USER:-gold_user}
-      DB_PASSWORD: ${DB_PASSWORD:-gold_password}
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-projectgold-6b3bf}
-    volumes:
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
       # Mount service-account.json if you put it in project gold directory for credential authorization
-      - .:/app
+      # - ./service-account.json:/app/service-account.json:ro
+    volumes:
+      - .:/app # Mount current directory for service-account.json access
     depends_on:
       - db
     restart: always
@@ -59,4 +62,3 @@ networks:
 
 volumes:
   postgres_data:
-

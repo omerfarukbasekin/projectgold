@@ -34,6 +34,8 @@ Dockerfile.bak
 # Logs
 *.log
 logs/
+collector.log
+syncer.log
 
 # Node.js (if you later add frontend build tools like npm/yarn)
 node_modules/

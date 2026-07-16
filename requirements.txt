@@ -1,7 +1,4 @@
-fastapi
-uvicorn
 requests
 psycopg2-binary
 firebase-admin
 python-decouple
-fastapi-limiter[redis]
