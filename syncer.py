@@ -22,7 +22,8 @@ logging.basicConfig(
 db_fs = None
 try:
     # Use Certificate file if available, otherwise fallback to project ID (ADC)
-    service_account_path = "service-account.json"
+    # When running on VM host, path is relative to current working directory
+    service_account_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service-account.json")
     project_id = config("FIREBASE_PROJECT_ID", default="projectgold-6b3bf")
     
     if os.path.exists(service_account_path):
@@ -31,6 +32,8 @@ try:
         logging.info("Firebase Admin Service Account ile başlatıldı.")
         print("Firebase Admin Service Account ile başlatıldı.")
     else:
+        # Fallback to default credentials if service account file is not found
+        # This often works in Google Cloud environments automatically.
         firebase_admin.initialize_app(options={"projectId": project_id})
         logging.info("Firebase Admin default/environment credentials ile başlatıldı.")
         print("Firebase Admin default credentials ile başlatıldı.")
@@ -45,7 +48,7 @@ except Exception as e:
 # -------- DB CONNECTION --------
 def get_db_connection():
     return psycopg2.connect(
-        host=config("DB_HOST", default="db"),
+        host=config("DB_HOST", default="localhost"), # Use localhost for direct local connection
         port=config("DB_PORT", default=5432, cast=int),
         database=config("DB_NAME", default="gold_db"),
         user=config("DB_USER", default="gold_user"),

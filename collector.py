@@ -27,7 +27,7 @@ def parse_datetime(val: str) -> datetime:
 
 def get_db_connection():
     return psycopg2.connect(
-        host=config("DB_HOST", default="db"),
+        host=config("DB_HOST", default="localhost"), # Use localhost for direct local connection
         port=config("DB_PORT", default=5432, cast=int),
         database=config("DB_NAME", default="gold_db"),
         user=config("DB_USER", default="gold_user"),

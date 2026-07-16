@@ -13,6 +13,8 @@ COPY collector.py .
 COPY syncer.py .
 COPY runner.sh .
 
+RUN chmod +x runner.sh collector.py syncer.py
+
 
 
 

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
@@ -10,49 +8,10 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     expose:
       - 5432
-    networks:
-      - app-network
-
-  collector:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: sh -c "./runner.sh collector"
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      # If collector needs to talk to external API with a key, define it here:
-      # GOLD_API_KEY: ${GOLD_API_KEY}
-    depends_on:
-      - db
-    restart: always
-    networks:
-      - app-network
-
-  syncer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: sh -c "./runner.sh syncer"
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
-      # Mount service-account.json if you put it in project gold directory for credential authorization
-      # - ./service-account.json:/app/service-account.json:ro
-    volumes:
-      - .:/app # Mount current directory for service-account.json access
-    depends_on:
-      - db
-    restart: always
     networks:
       - app-network
 
