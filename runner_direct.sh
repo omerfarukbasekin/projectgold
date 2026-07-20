@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Sanal ortam (venv) varsa aktif et
+# Sanal ortam (venv) varsa aktif et ve PATH'e ekle
 if [ -d "venv" ]; then
     source venv/bin/activate
 fi
@@ -8,11 +8,18 @@ fi
 echo "Zamanlanmış Direkt Syncer başlatılıyor..."
 
 # Terminal kapansa dahi arka planda (nohup ile) her 30 dakikada bir manual_push_all.py çalıştıracak sonsuz döngü
+# İçerideki python3 komutunu tam path ile çağırıyoruz ki nohup alt kabukta (subshell) venv'i kaybetmesin.
 nohup bash -c '
 while true; do
   echo "-----------------------------------" >> direct_syncer.log
   echo "[$(date)] manual_push_all.py tetikleniyor..." >> direct_syncer.log
-  python3 manual_push_all.py >> direct_syncer.log 2>&1
+  
+  if [ -f "venv/bin/python3" ]; then
+      venv/bin/python3 manual_push_all.py >> direct_syncer.log 2>&1
+  else
+      python3 manual_push_all.py >> direct_syncer.log 2>&1
+  fi
+  
   echo "[$(date)] 30 Dakika bekleniyor..." >> direct_syncer.log
   sleep 1800
 done
