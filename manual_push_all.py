@@ -4,10 +4,13 @@ from firebase_admin import credentials, firestore
 import os
 from datetime import datetime
 import sys
+import time
 
 DB_FILE = "app.db"
 
-# 1. Firebase Başlatma
+# Her pakette 200 trade (400 write) olacak şekilde sonsuz döngü (kuyruk bitene kadar)
+BATCH_SIZE = 200 
+
 print("Firebase bağlantısı test ediliyor...")
 try:
     project_id = os.environ.get("FIREBASE_PROJECT_ID", "projectgold-6b3bf")
@@ -26,7 +29,6 @@ except Exception as e:
     print(f"BAĞLANTI HATASI: {e}")
     sys.exit(1)
 
-# 2. SQLite'dan Veri Çekme
 print(f"\n'{DB_FILE}' dosyasından veriler okunuyor...")
 if not os.path.exists(DB_FILE):
     print("HATA: app.db dosyası bulunamadı!")
@@ -36,70 +38,73 @@ conn = sqlite3.connect(DB_FILE)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
-# TÜM dataları çek
-cur.execute("""
-    SELECT id, code, description, price_buy, price_sell, source_updated_at 
-    FROM trades 
-    ORDER BY source_updated_at ASC
-""")
-all_trades = cur.fetchall()
-
-if not all_trades:
-    print("Veritabanında hiç kayıt bulunamadı.")
-    conn.close()
-    sys.exit(0)
-
-print(f"Toplam {len(all_trades)} adet kayıt bulundu. Firebase'e aktarım başlıyor...")
-
-# 3. Batch ile Firebase'e Gönderme
-batch = db_fs.batch()
-ops_count = 0
 total_synced = 0
+print(f"Güvenli aktarım başladı. Tüm kuyruk (synced=0) bitene kadar sürecek...")
 
-for trade in all_trades:
+while True:
+    cur.execute(f"""
+        SELECT id, code, description, price_buy, price_sell, source_updated_at 
+        FROM trades 
+        WHERE synced_to_firebase = 0
+        ORDER BY source_updated_at ASC
+        LIMIT {BATCH_SIZE}
+    """)
+    trades = cur.fetchall()
+
+    if not trades:
+        print("\nSQLite üzerinde aktarılacak (synced=0) başka kayıt kalmadı!")
+        break
+
+    batch = db_fs.batch()
+    synced_ids = []
+
+    for trade in trades:
+        try:
+            code = trade["code"]
+            source_time_str = trade["source_updated_at"]
+            
+            doc_id = source_time_str.replace(" ", "_").replace(":", "-")
+            source_time_dt = datetime.strptime(source_time_str, "%Y-%m-%d %H:%M:%S")
+
+            latest_ref = db_fs.collection("gold_prices").document(code)
+            batch.set(latest_ref, {
+                "code": code,
+                "description": trade["description"] or "",
+                "price_buy": float(trade["price_buy"]),
+                "price_sell": float(trade["price_sell"]),
+                "source_updated_at": source_time_dt,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+
+            history_ref = latest_ref.collection("history").document(doc_id)
+            batch.set(history_ref, {
+                "price_buy": float(trade["price_buy"]),
+                "price_sell": float(trade["price_sell"]),
+                "source_updated_at": source_time_dt,
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+
+            synced_ids.append(trade["id"])
+        except Exception as fe:
+            print(f"Hazırlama hatası (ID: {trade['id']}): {fe}")
+
+    # Firebase'e Gönder (Timeout/Hata kontrolü ile)
     try:
-        code = trade["code"]
-        source_time_str = trade["source_updated_at"]
-        
-        doc_id = source_time_str.replace(" ", "_").replace(":", "-")
-        source_time_dt = datetime.strptime(source_time_str, "%Y-%m-%d %H:%M:%S")
+        batch.commit()
+        # SQLite'ta gönderildi olarak işaretle
+        if synced_ids:
+            placeholders = ','.join('?' for _ in synced_ids)
+            cur.execute(f"UPDATE trades SET synced_to_firebase = 1 WHERE id IN ({placeholders})", synced_ids)
+            conn.commit()
+            
+        total_synced += len(synced_ids)
+        print(f"... Toplam {total_synced} kayıt başarıyla aktarıldı ve SQLite'ta işaretlendi.")
+    except Exception as commit_error:
+        print(f"Firebase Yazma Hatası: {commit_error}. İşlem durduruluyor, bir sonraki döngüde tekrar denenecek.")
+        break
 
-        latest_ref = db_fs.collection("gold_prices").document(code)
-        batch.set(latest_ref, {
-            "code": code,
-            "description": trade["description"] or "",
-            "price_buy": float(trade["price_buy"]),
-            "price_sell": float(trade["price_sell"]),
-            "source_updated_at": source_time_dt,
-            "updated_at": firestore.SERVER_TIMESTAMP
-        })
+    # Firebase kotasını aşırı yormamak için her batch arası 2 saniye dinlen
+    time.sleep(2)
 
-        history_ref = latest_ref.collection("history").document(doc_id)
-        batch.set(history_ref, {
-            "price_buy": float(trade["price_buy"]),
-            "price_sell": float(trade["price_sell"]),
-            "source_updated_at": source_time_dt,
-            "created_at": firestore.SERVER_TIMESTAMP
-        })
-
-        ops_count += 2
-        total_synced += 1
-
-        if ops_count >= 490:
-            batch.commit()
-            print(f"... {total_synced} kayıt işlendi (Batch commit edildi).")
-            batch = db_fs.batch()
-            ops_count = 0
-
-    except Exception as fe:
-        print(f"Hazırlama hatası (ID: {trade['id']}): {fe}")
-
-if ops_count > 0:
-    batch.commit()
-
-print("\nFirebase aktarımı bitti. SQLite güncelleniyor...")
-cur.execute("UPDATE trades SET synced_to_firebase = 1")
-conn.commit()
 conn.close()
-
-print(f"\nBAŞARILI: Toplam {total_synced} kayıt Firebase'e gönderildi ve SQLite'ta işaretlendi.")
+print(f"\nİŞLEM TAMAMLANDI. Toplam {total_synced} adet kayıt Firebase'e aktarıldı.")
