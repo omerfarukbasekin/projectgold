@@ -7,8 +7,8 @@ while true; do
   sleep 600
 done
 
-
-
+docker build -t gold-price-app-old .
+docker run -d   --name gold-collector-old   -v "$(pwd)":/app   gold-price-app-old
 
 from datetime import datetime
 import requests
@@ -96,4 +96,3 @@ if __name__ == "__main__":
     main()
 
 
-    bunlar eskiden çalışanlar stabele çalışıyordu bunlar gibi yapamazmıyız

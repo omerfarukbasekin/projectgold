@@ -1,16 +1,13 @@
-from datetime import datetime
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import sqlite3
 import firebase_admin
 from firebase_admin import credentials, firestore
 import logging
-import time
 import os
-from decouple import config
+from datetime import datetime
 
 LOG_FILE = "syncer.log"
+DB_FILE = "app.db" # Eski sisteme uyumlu path
 
-# -------- LOG CONFIG --------
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -18,130 +15,113 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# -------- FIREBASE INITIALIZATION --------
 db_fs = None
 try:
-    # Use Certificate file if available, otherwise fallback to project ID (ADC)
-    # When running on VM host, path is relative to current working directory
+    project_id = os.environ.get("FIREBASE_PROJECT_ID", "projectgold-6b3bf")
     service_account_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service-account.json")
-    project_id = config("FIREBASE_PROJECT_ID", default="projectgold-6b3bf")
-    
     if os.path.exists(service_account_path):
         cred = credentials.Certificate(service_account_path)
         firebase_admin.initialize_app(cred, options={"projectId": project_id})
-        logging.info("Firebase Admin Service Account ile başlatıldı.")
-        print("Firebase Admin Service Account ile başlatıldı.")
+        logging.info("Firebase Service Account ile başlatıldı.")
     else:
-        # Fallback to default credentials if service account file is not found
-        # This often works in Google Cloud environments automatically.
         firebase_admin.initialize_app(options={"projectId": project_id})
-        logging.info("Firebase Admin default/environment credentials ile başlatıldı.")
-        print("Firebase Admin default credentials ile başlatıldı.")
-        
+        logging.info("Firebase default credentials (ADC) ile başlatıldı.")
     db_fs = firestore.client()
-    logging.info("Firebase Firestore bağlantısı başarıyla kuruldu.")
-    print("Firebase Firestore bağlantısı kuruldu.")
 except Exception as e:
-    logging.error(f"Firebase Firestore başlatılamadı: {e}")
-    print(f"Hata: Firebase Firestore başlatılamadı: {e}")
+    logging.error(f"Firebase başlatılamadı: {e}")
+    print(f"Firebase başlatılamadı (HATA): {e}")
 
-# -------- DB CONNECTION --------
-def get_db_connection():
-    return psycopg2.connect(
-        host=config("DB_HOST", default="localhost"), # Use localhost for direct local connection
-        port=config("DB_PORT", default=5432, cast=int),
-        database=config("DB_NAME", default="gold_db"),
-        user=config("DB_USER", default="gold_user"),
-        password=config("DB_PASSWORD", default="gold_password")
-    )
-
-# -------- SYNC LOGIC --------
 def sync_to_firebase():
     if db_fs is None:
-        logging.error("Firebase Firestore bağlantısı mevcut değil. Senkronizasyon iptal edildi.")
-        print("Hata: Firebase bağlantısı bulunmadığından senkronizasyon yapılamıyor.")
+        print("Firebase bağlantısı yok, çıkılıyor.")
         return
 
-    logging.info("Senkronizasyon işlemi başlatıldı...")
-    print("Postgresql'den yeni veriler okunuyor...")
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
 
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Select unsynced trades
-        cur.execute("""
-            SELECT id, code, description, price_buy, price_sell, source_updated_at 
-            FROM trades 
-            WHERE synced_to_firebase = FALSE
-            ORDER BY source_updated_at ASC
-        """)
-        unsynced_trades = cur.fetchall()
-        
-        if not unsynced_trades:
-            logging.info("Senkronize edilecek yeni veri bulunamadı.")
-            print("Senkronize edilecek yeni veri yok.")
-            cur.close()
+    cur.execute("""
+        SELECT id, code, description, price_buy, price_sell, source_updated_at 
+        FROM trades 
+        WHERE synced_to_firebase = 0
+        ORDER BY source_updated_at ASC
+    """)
+    unsynced_trades = cur.fetchall()
+
+    if not unsynced_trades:
+        conn.close()
+        return
+
+    # Firestore yazmalarını atomik yapmak için Batch kullanıyoruz (Maks 500 işlem)
+    batch = db_fs.batch()
+    synced_ids = []
+    ops_count = 0
+
+    for trade in unsynced_trades:
+        try:
+            code = trade["code"]
+            source_time_str = trade["source_updated_at"]
+            
+            # Idempotent doküman IDsi: aynı veri tekrar gelse bile çift kayıt oluşmaz.
+            doc_id = source_time_str.replace(" ", "_").replace(":", "-")
+            source_time_dt = datetime.strptime(source_time_str, "%Y-%m-%d %H:%M:%S")
+
+            latest_ref = db_fs.collection("gold_prices").document(code)
+            batch.set(latest_ref, {
+                "code": code,
+                "description": trade["description"] or "",
+                "price_buy": float(trade["price_buy"]),
+                "price_sell": float(trade["price_sell"]),
+                "source_updated_at": source_time_dt,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+
+            history_ref = latest_ref.collection("history").document(doc_id)
+            batch.set(history_ref, {
+                "price_buy": float(trade["price_buy"]),
+                "price_sell": float(trade["price_sell"]),
+                "source_updated_at": source_time_dt,
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+
+            synced_ids.append(trade["id"])
+            ops_count += 2
+
+            # Batch limiti 500dür. Sınır aşılırsa batchi commit edip yenisini açıyoruz.
+            if ops_count >= 490:
+                batch.commit()
+                batch = db_fs.batch()
+                ops_count = 0
+
+        except Exception as fe:
+            logging.error(f"Firestore hazırlama hatası (ID: {trade["id"]}): {fe}")
+
+    # Kalan son batchi gönder
+    if ops_count > 0:
+        try:
+            batch.commit()
+            logging.info(f"{len(synced_ids)} adet kayıt başarıyla Firestorea yazıldı (Batch Commit).")
+        except Exception as e:
+            logging.error(f"Batch yazma sırasında hata: {e}")
             conn.close()
             return
 
-        print(f"{len(unsynced_trades)} adet yeni kayıt Firestore'a senkronize ediliyor...")
-        logging.info(f"{len(unsynced_trades)} yeni kayıt Firestore'a senkronize ediliyor.")
-
-        synced_ids = []
-
-        # Process each trade and write to Firestore
-        for trade in unsynced_trades:
-            try:
-                code = trade["code"]
-                source_time_dt = trade["source_updated_at"]
-                
-                # Document ID format for history (e.g. 2026-07-08_14-30-00)
-                doc_id = source_time_dt.strftime("%Y-%m-%d_%H-%M-%S")
-
-                # 1. Update the latest price document for this code
-                latest_ref = db_fs.collection("gold_prices").document(code)
-                latest_ref.set({
-                    "code": code,
-                    "description": trade.get("description") or "",
-                    "price_buy": float(trade["price_buy"]),
-                    "price_sell": float(trade["price_sell"]),
-                    "source_updated_at": source_time_dt,
-                    "updated_at": firestore.SERVER_TIMESTAMP
-                })
-
-                # 2. Add to history subcollection
-                history_ref = latest_ref.collection("history").document(doc_id)
-                history_ref.set({
-                    "price_buy": float(trade["price_buy"]),
-                    "price_sell": float(trade["price_sell"]),
-                    "source_updated_at": source_time_dt,
-                    "created_at": firestore.SERVER_TIMESTAMP
-                })
-
-                synced_ids.append(trade["id"])
-            except Exception as fe:
-                logging.error(f"Firestore yazma hatası (ID: {trade['id']}): {fe}")
-                print(f"Firestore yazma hatası (ID: {trade['id']}): {fe}")
-
-        # Batch update PostgreSQL rows as synced_to_firebase = TRUE
-        if synced_ids:
-            cur.execute("""
+    # Sadece Firebasee başarıyla (hata fırlatmadan) yazılanları SQLite ta işaretle
+    if synced_ids:
+        # SQLite IN clause sınırı (999 değişken) aşılmasın diye 500 lük gruplar yapıyoruz
+        chunk_size = 500
+        for i in range(0, len(synced_ids), chunk_size):
+            chunk = synced_ids[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            cur.execute(f"""
                 UPDATE trades 
-                SET synced_to_firebase = TRUE 
-                WHERE id = ANY(%s)
-            """, (synced_ids,))
-            conn.commit()
-            logging.info(f"{len(synced_ids)} adet kayıt Postgres'te 'synced_to_firebase = TRUE' olarak güncellendi.")
-            print(f"{len(synced_ids)} adet kayıt başarıyla Firestore'a senkronize edildi ve işaretlendi.")
+                SET synced_to_firebase = 1 
+                WHERE id IN ({placeholders})
+            """, chunk)
+        conn.commit()
+        print(f"{len(synced_ids)} kayıt başarıyla Firestorea yazıldı ve SQLite üzerinde işaretlendi.")
 
-        cur.close()
-        conn.close()
-
-    except Exception as e:
-        logging.error(f"Senkronizasyon sırasında genel hata: {e}")
-        print(f"Senkronizasyon hatası: {e}")
+    conn.close()
 
 if __name__ == "__main__":
-    # Run once when called
     sync_to_firebase()

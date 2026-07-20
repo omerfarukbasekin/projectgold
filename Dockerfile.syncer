@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+
+RUN pip install --no-cache-dir firebase-admin
+
+# Sadece syncer dosyalarını alıyoruz
+COPY syncer.py .
+COPY runner_syncer.sh .
+
+RUN chmod +x runner_syncer.sh
+
+CMD ["sh", "runner_syncer.sh"]
