@@ -8,8 +8,8 @@ import time
 
 DB_FILE = "app.db"
 
-# Her pakette 200 trade (400 write) olacak şekilde sonsuz döngü (kuyruk bitene kadar)
-BATCH_SIZE = 200 
+FETCH_LIMIT = 4000
+BATCH_SIZE = 10 
 
 print("Firebase bağlantısı test ediliyor...")
 try:
@@ -39,26 +39,30 @@ conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
 total_synced = 0
-print(f"Güvenli aktarım başladı. Tüm kuyruk (synced=0) bitene kadar sürecek...")
+print("Güvenli aktarım başladı (Sondan max 200 veri alınacak, 10'ar 10'ar yollanacak).")
 
-while True:
-    cur.execute(f"""
-        SELECT id, code, description, price_buy, price_sell, source_updated_at 
-        FROM trades 
-        WHERE synced_to_firebase = 0
-        ORDER BY source_updated_at ASC
-        LIMIT {BATCH_SIZE}
-    """)
-    trades = cur.fetchall()
+cur.execute(f"""
+    SELECT id, code, description, price_buy, price_sell, source_updated_at 
+    FROM trades 
+    WHERE synced_to_firebase = 0
+    ORDER BY source_updated_at DESC
+    LIMIT {FETCH_LIMIT}
+""")
+trades = cur.fetchall()
 
-    if not trades:
-        print("\nSQLite üzerinde aktarılacak (synced=0) başka kayıt kalmadı!")
-        break
+trades = trades[::-1]
 
+if not trades:
+    print("\nSQLite üzerinde aktarılacak (synced=0) başka kayıt kalmadı!")
+    conn.close()
+    sys.exit(0)
+
+for i in range(0, len(trades), BATCH_SIZE):
+    chunk = trades[i:i + BATCH_SIZE]
     batch = db_fs.batch()
     synced_ids = []
 
-    for trade in trades:
+    for trade in chunk:
         try:
             code = trade["code"]
             source_time_str = trade["source_updated_at"]
@@ -88,23 +92,20 @@ while True:
         except Exception as fe:
             print(f"Hazırlama hatası (ID: {trade['id']}): {fe}")
 
-    # Firebase'e Gönder (Timeout/Hata kontrolü ile)
     try:
         batch.commit()
-        # SQLite'ta gönderildi olarak işaretle
         if synced_ids:
-            placeholders = ','.join('?' for _ in synced_ids)
+            placeholders = ",".join("?" for _ in synced_ids)
             cur.execute(f"UPDATE trades SET synced_to_firebase = 1 WHERE id IN ({placeholders})", synced_ids)
             conn.commit()
             
         total_synced += len(synced_ids)
-        print(f"... Toplam {total_synced} kayıt başarıyla aktarıldı ve SQLite'ta işaretlendi.")
+        print(f"... 10'luk paket gitti. Toplam {total_synced}/{len(trades)} kayıt başarıyla aktarıldı.")
     except Exception as commit_error:
-        print(f"Firebase Yazma Hatası: {commit_error}. İşlem durduruluyor, bir sonraki döngüde tekrar denenecek.")
+        print(f"Firebase Yazma Hatası: {commit_error}. İşlem durduruluyor.")
         break
 
-    # Firebase kotasını aşırı yormamak için her batch arası 2 saniye dinlen
-    time.sleep(2)
+    time.sleep(5)
 
 conn.close()
-print(f"\nİŞLEM TAMAMLANDI. Toplam {total_synced} adet kayıt Firebase'e aktarıldı.")
+print(f"\nİŞLEM TAMAMLANDI. Bu partide toplam {total_synced} adet kayıt Firebase'e aktarıldı.")
