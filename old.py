@@ -7,6 +7,7 @@ while true; do
   sleep 600
 done
 
+docker start gold-collector-old
 docker build -t gold-price-app-old .
 docker run -d   --name gold-collector-old   -v "$(pwd)":/app   gold-price-app-old
 
